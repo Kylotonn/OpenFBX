@@ -18,7 +18,110 @@
 
 namespace ofbx
 {
+std::map<ofbx::u64, ofbx::u64> gIdsMap;
+bool gDeterminator = false;
+void SetDeterminator(bool bEnable)
+{
+	gDeterminator = bEnable;
+}
 
+const char* const gTimeStampString = "2023-04-19 14:57:44:916";
+std::vector<u8> gFileIdBinary =
+	{0x2c, 0xb3, 0x2a, 0xee, 0xb3, 0x25, 0xcc, 0xca, 0xbe, 0xc8, 0xb3, 0x20, 0xa6, 0x27, 0xf5, 0xff};
+
+std::vector<u8> gFooterChecksum = { 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0xfa, 0xbc, 0xaf, 0x09, 0xd4, 0xcd, 0xd5, 0x62, 0xb0, 0x7a, 0xfb, 0x8f, 0x1f, 0xf1, 0x2a, 0x74};
+
+const int gTimeStampYear = 2023;
+const int gTimeStampMonth = 4;
+const int gTimeStampDay = 19;
+const int gTimeStampHour = 14;
+const int gTimeStampMinute = 57;
+const int gTimeStampSecond = 44;
+const int gTimeStampMillisecond = 916;
+
+u64 NewDeterministicId()
+{
+	static u64 first_id = 0x12120000;
+	first_id++;
+	return first_id;
+}
+
+void MakeIdDeterministic(IElementProperty* prop)
+{
+	assert(prop != nullptr);
+	assert(prop->getType() == IElementProperty::Type::LONG);
+	assert(prop->getValue().is_binary);
+	auto child_id = prop->getValue().toU64();
+	u64 mapped_id = 0;
+	if (gIdsMap.find(child_id) != gIdsMap.end())
+	{
+		mapped_id = gIdsMap[child_id];
+	}
+	else
+	{
+		// no change if 0
+		mapped_id = child_id == 0 ? 0 : NewDeterministicId();
+		gIdsMap[child_id] = mapped_id;
+	}
+	// overwrite id in memory
+	memcpy((void*)prop->getValue().begin, (void*)&mapped_id, sizeof(u64));
+}
+
+void MakeBinaryDeterministic(IElementProperty* prop, std::vector<u8> &value)
+{
+	assert(prop != nullptr);
+	assert(prop->getType() == IElementProperty::Type::BINARY);
+	assert(prop->getValue().is_binary);
+	size_t cur_len = prop->getValue().end - prop->getValue().begin;
+	// 4 because there is first the size of the binary value
+	assert(cur_len - 4 == value.size());
+	memcpy((void*)(prop->getValue().begin + 4), &value[0], cur_len - 4);
+}
+
+void MakeStringDeterministic(IElementProperty* prop, const char* new_string = nullptr)
+{
+	assert(prop != nullptr);
+	assert(prop->getType() == IElementProperty::Type::STRING);
+	assert(prop->getValue().is_binary);
+	size_t cur_len = prop->getValue().end - prop->getValue().begin;
+	if (new_string != nullptr)
+	{
+		assert(cur_len == strlen(new_string));
+		memcpy((void*)prop->getValue().begin, new_string, cur_len);
+	}
+	else
+	{
+		// just put "X" to clear the string
+		memset((void*)prop->getValue().begin, 'X', cur_len);
+	}
+}
+
+void MakeTimestampChildDeterministic(IElement* elem)
+{
+	assert(elem != nullptr);
+	assert(elem->getFirstProperty() != nullptr);
+	assert(elem->getFirstProperty()->getType() == IElementProperty::Type::INTEGER);
+	assert(elem->getFirstProperty()->getValue().is_binary);
+
+	char elem_id[128];
+	elem->getID().toString(elem_id);
+#define patch(name, value) \
+	{                      \
+		if (strcmp(elem_id, name) == 0) \
+		{                               \
+			int v = value; \
+			memcpy((void*)elem->getFirstProperty()->getValue().begin, (void*)&v, sizeof(int));	\
+		} \
+	}
+	patch("Year", gTimeStampYear);
+	patch("Month", gTimeStampMonth);
+	patch("Day", gTimeStampDay);
+	patch("Hour", gTimeStampHour);
+	patch("Minute", gTimeStampMinute);
+	patch("Second", gTimeStampSecond);
+	patch("Millisecond", gTimeStampMillisecond);
+}
 
 struct Allocator {
 	struct Page {
@@ -727,11 +830,31 @@ static OptionalError<Element*> readElement(Cursor* cursor, u32 version, Allocato
 		prop_link = &(*prop_link)->next;
 	}
 
+	// check if we're objects
+	char element_id[128];
+	element->getID().toString(element_id);
+	bool parsing_objects = strcmp(element_id, "Objects") == 0;
+	bool parsing_connections = strcmp(element_id, "Connections") == 0;
+	bool parsing_timestamp = strcmp(element_id, "CreationTimeStamp") == 0;
+	bool parsing_creation_time = strcmp(element_id, "CreationTime") == 0;
+	bool parsing_creator = strcmp(element_id, "Creator") == 0;
+	bool parsing_file_id = strcmp(element_id, "FileId") == 0;
+	if (gDeterminator)
+	{
+		if (parsing_creation_time)
+			MakeStringDeterministic(element->getFirstProperty(), gTimeStampString);
+		if (parsing_creator)
+			MakeStringDeterministic(element->getFirstProperty());
+		if (parsing_file_id)
+			MakeBinaryDeterministic(element->getFirstProperty(), gFileIdBinary);
+	}
+
 	if (cursor->current - cursor->begin >= (ptrdiff_t)end_offset.getValue()) return element;
 
 	int BLOCK_SENTINEL_LENGTH = version >= 7500 ? 25 : 13;
 
 	Element** link = &element->child;
+
 	while (cursor->current - cursor->begin < ((ptrdiff_t)end_offset.getValue() - BLOCK_SENTINEL_LENGTH))
 	{
 		OptionalError<Element*> child = readElement(cursor, version, allocator);
@@ -741,6 +864,25 @@ static OptionalError<Element*> readElement(Cursor* cursor, u32 version, Allocato
 		}
 
 		*link = child.getValue();
+		if (gDeterminator)
+		{
+			if (parsing_objects)
+			{
+				MakeIdDeterministic(child.getValue()->getFirstProperty());
+			}
+			if (parsing_connections)
+			{
+				assert(child.getValue()->getFirstProperty() != nullptr);
+				assert(child.getValue()->getFirstProperty()->getNext() != nullptr);
+				assert(child.getValue()->getFirstProperty()->getNext()->getNext() != nullptr);
+				MakeIdDeterministic(child.getValue()->getFirstProperty()->getNext());
+				MakeIdDeterministic(child.getValue()->getFirstProperty()->getNext()->getNext());
+			}
+			if (parsing_timestamp)
+			{
+				MakeTimestampChildDeterministic(child.getValue());
+			}
+		}
 		if (child.getValue() == 0) break;
 		link = &(*link)->sibling;
 	}
@@ -1047,7 +1189,18 @@ static OptionalError<Element*> tokenize(const u8* data, size_t size, u32& versio
 		}
 
 		*element = child.getValue();
-		if (!*element) return root;
+		if (!*element)
+		{
+			if (gDeterminator)
+			{
+				// we're done, patch footer
+				// patch checksum
+				assert(cursor.current + gFooterChecksum.size() < cursor.end);
+				memcpy((void*)cursor.current, &gFooterChecksum[0], gFooterChecksum.size());
+				cursor.current += gFooterChecksum.size();
+			}
+			return root;
+		}
 		element = &(*element)->sibling;
 	}
 }
@@ -4069,6 +4222,13 @@ IScene* load(const u8* data, int size, u16 flags, JobProcessor job_processor, vo
 	else {
 		root = tokenizeText(&scene->m_data[0], size, scene->m_allocator);
 		if (root.isError()) return nullptr;
+	}
+
+	// just return, no need to parse everything here
+	if (gDeterminator)
+	{
+		memcpy((void*)data, &scene->m_data[0], size);
+		return nullptr;
 	}
 
 	scene->m_root_element = root.getValue();

@@ -1,9 +1,10 @@
 #pragma once
 
+#undef VOID	// conflict with a #define
 
 namespace ofbx
 {
-
+void SetDeterminator(bool bEnable);
 
 typedef unsigned char u8;
 typedef unsigned short u16;
