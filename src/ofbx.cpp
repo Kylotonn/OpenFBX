@@ -847,8 +847,11 @@ static OptionalError<Element*> readElement(Cursor* cursor, u32 version, Allocato
 	bool parsing_creation_time = strcmp(element_id, "CreationTime") == 0;
 	bool parsing_creator = strcmp(element_id, "Creator") == 0;
 	bool parsing_file_id = strcmp(element_id, "FileId") == 0;
+	bool parsing_document = strcmp(element_id, "Document") == 0;
 	if (gDeterminator)
 	{
+		if (parsing_document)
+			MakeIdDeterministic(element->getFirstProperty());
 		if (parsing_creation_time)
 			MakeStringDeterministic(element->getFirstProperty(), gTimeStampString);
 		if (parsing_creator)
