@@ -40,11 +40,19 @@ const int gTimeStampMinute = 57;
 const int gTimeStampSecond = 44;
 const int gTimeStampMillisecond = 916;
 
+static u64 gFirstId = 0;
+
+void InitDeterminator()
+{
+	// Handy number because it ends with 00 in decimal and hexadecimal
+	gFirstId = 0x1900;
+	gIdsMap.clear();
+}
+
 u64 NewDeterministicId()
 {
-	static u64 first_id = 0x12120000;
-	first_id++;
-	return first_id;
+	gFirstId++;
+	return gFirstId;
 }
 
 void MakeIdDeterministic(IElementProperty* prop)
@@ -1178,6 +1186,11 @@ static OptionalError<Element*> tokenize(const u8* data, size_t size, u32& versio
 	root->id.end = nullptr;
 	root->child = nullptr;
 	root->sibling = nullptr;
+
+	if (gDeterminator)
+	{
+		InitDeterminator();
+	}
 
 	Element** element = &root->child;
 	for (;;)
